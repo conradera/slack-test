@@ -2,47 +2,49 @@ import os
 import json
 import logging
 from slack_bolt import App
-from slack_bolt.adapter.aws_lambda import SlackRequestHandler
-from slack_bolt.request import BoltRequest
-from slack_bolt.response import BoltResponse
+from slack_bolt.adapter.flask import SlackRequestHandler
+from flask import Flask, request, jsonify
 from http import HTTPStatus
 
 # ロギング設定
 logging.basicConfig(level=logging.INFO)
 
+# Flask appの初期化
+flask_app = Flask(__name__)
+
 # Slack Appの初期化（環境変数からトークンとシークレットを取得）
 bolt_app = App(
     signing_secret=os.environ.get("SLACK_SIGNING_SECRET"),
     token=os.environ.get("SLACK_BOT_TOKEN"),
-    process_before_response=True  # Vercelでの高速応答のため
+    process_before_response=True
 )
 
+# SlackRequestHandlerの初期化
+handler = SlackRequestHandler(bolt_app)
+
 # -----------------------------------------------
-# Slack Request URL 検証のためのカスタムハンドラ
+# Flask Routes
 # -----------------------------------------------
 
-# Vercelで実行されるエントリーポイント
-def handler(req: HttpRequest):
-    try:
-        # 1. リクエストボディの解析
-        body = json.loads(req.body)
-    except json.JSONDecodeError:
-        # JSONデコードエラーの場合、通常のBoltハンドラに委譲
-        return SlackRequestHandler(app=bolt_app).handle(req)
+@flask_app.route("/slack/events", methods=["POST"])
+def slack_events():
+    """Slack Events API endpoint"""
+    return handler.handle(request)
 
-    # 2. url_verification イベントのチェック
-    if body.get('type') == 'url_verification':
-        challenge = body.get('challenge')
-        if challenge:
-            # challenge パラメータをプレーンテキストで返却
-            return BoltResponse(
-                status=HTTPStatus.OK.value,
-                body=challenge,
-                headers={"Content-Type": ["text/plain"]}
-            )
+@flask_app.route("/slack/interactive", methods=["POST"])
+def slack_interactive():
+    """Slack Interactive Components endpoint"""
+    return handler.handle(request)
 
-    # 3. それ以外のすべてのリクエストは、Boltフレームワークの標準処理に委譲
-    return SlackRequestHandler(app=bolt_app).handle(req)
+@flask_app.route("/slack/oauth", methods=["GET"])
+def slack_oauth():
+    """Slack OAuth callback endpoint"""
+    return handler.handle(request)
+
+@flask_app.route("/", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "ok", "message": "Slack bot is running"})
 
 
 # -----------------------------------------------
@@ -82,37 +84,26 @@ def handle_member_joined_channel(event, client, logger):
         print(f"ERROR: Failed to send message: {e}")
 
 # -----------------------------------------------
-# Vercelのインポート処理のためのダミー定義
+# Flask App Runner
 # -----------------------------------------------
 
-# Vercelは直接 'handler' 関数を呼び出せないため、
-# Vercelの環境に合わせて HttpRequest クラスをここで定義します。
-class HttpRequest:
-    def __init__(self, body):
-        self.body = body
-
-# Vercelの関数ランタイムからのリクエスト処理
-# (このコードは、Vercelの環境で自動的に調整されますが、
-# 互換性のため残しておきます)
-def http_handler(event, context):
-    try:
-        # Vercelからのリクエストイベントからbodyを抽出
-        if 'body' in event and event['body'] is not None:
-            body = event['body']
-        else:
-            body = "{}"
-
-        req = HttpRequest(body=body)
-        response = handler(req)
-
-        return {
-            "statusCode": response.status,
-            "headers": {k: v[0] for k, v in response.headers.items()},
-            "body": response.body,
-        }
-    except Exception as e:
-        logging.error(f"Execution failed: {e}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+if __name__ == "__main__":
+    # 環境変数のチェック
+    if not os.environ.get("SLACK_BOT_TOKEN"):
+        print("Warning: SLACK_BOT_TOKEN environment variable is not set")
+        print("Please set your Slack bot token to test the app")
+    
+    if not os.environ.get("SLACK_SIGNING_SECRET"):
+        print("Warning: SLACK_SIGNING_SECRET environment variable is not set")
+        print("Please set your Slack signing secret to test the app")
+    
+    # Flask appを起動
+    print("Starting Slack bot server...")
+    print("Available endpoints:")
+    print("  GET  / - Health check")
+    print("  POST /slack/events - Slack Events API")
+    print("  POST /slack/interactive - Slack Interactive Components")
+    print("  GET  /slack/oauth - Slack OAuth callback")
+    print("\nTo test locally, use ngrok or similar tool to expose this server to Slack")
+    
+    flask_app.run(host="0.0.0.0", port=3000, debug=True)

@@ -1,4 +1,2 @@
-slackclient>=2.0.0
-slackeventsapi>=2.1.0
-Flask>=1.1.1
-certifi
+slack-bolt>=1.0.0
+Flask>=2.0.0

@@ -1,0 +1,8 @@
+# Slack App Configuration
+# Get these values from your Slack App settings at https://api.slack.com/apps
+
+# Bot User OAuth Token (starts with xoxb-)
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+
+# Signing Secret (found in App Credentials)
+SLACK_SIGNING_SECRET=your-signing-secret-here

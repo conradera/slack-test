@@ -1,2 +1,1 @@
-# slack-test
-testing
+# 2slack-onboarding-app

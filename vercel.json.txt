@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "functions": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxDuration": 10
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/slack/events",
+      "dest": "app.py"
+    },
+    {
+      "src": "/.*",
+      "dest": "app.py"
+    }
+  ]
+}

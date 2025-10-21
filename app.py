@@ -2,77 +2,53 @@ import os
 import json
 import logging
 from slack_bolt import App
-from slack_bolt.adapter.flask import SlackRequestHandler
-from flask import Flask, request, jsonify
+from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from http import HTTPStatus
+# Remove unnecessary imports to align with the Vercel/Lambda entry point function
 
-# ロギング設定
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Flask appの初期化
-flask_app = Flask(__name__)
-
-# Slack Appの初期化（環境変数からトークンとシークレットを取得）
+# Initialize the Slack App (tokens and secrets from environment variables)
 bolt_app = App(
     signing_secret=os.environ.get("SLACK_SIGNING_SECRET"),
     token=os.environ.get("SLACK_BOT_TOKEN"),
-    process_before_response=True
+    process_before_response=True  # Essential for meeting Slack's 3-second response rule
 )
 
-# SlackRequestHandlerの初期化
-handler = SlackRequestHandler(bolt_app)
+# Initialize the SlackRequestHandler globally
+# This minimizes cold start initialization cost in Lambda/Vercel
+slack_handler = SlackRequestHandler(app=bolt_app)
 
 # -----------------------------------------------
-# Flask Routes
-# -----------------------------------------------
-
-@flask_app.route("/slack/events", methods=["POST"])
-def slack_events():
-    """Slack Events API endpoint"""
-    return handler.handle(request)
-
-@flask_app.route("/slack/interactive", methods=["POST"])
-def slack_interactive():
-    """Slack Interactive Components endpoint"""
-    return handler.handle(request)
-
-@flask_app.route("/slack/oauth", methods=["GET"])
-def slack_oauth():
-    """Slack OAuth callback endpoint"""
-    return handler.handle(request)
-
-@flask_app.route("/", methods=["GET"])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({"status": "ok", "message": "Slack bot is running"})
-
-
-# -----------------------------------------------
-# アプリのロジック (チャンネル参加イベント)
+# Application Logic (Channel Join Event)
 # -----------------------------------------------
 
 @bolt_app.event("member_joined_channel")
 def handle_member_joined_channel(event, client, logger):
     """
-    新しいメンバーがチャンネルに参加したときに歓迎メッセージを投稿する
+    Posts a welcome message when a new member joins a channel.
     """
     user_id = event["user"]
     channel_id = event["channel"]
 
-    # メンバーがBot自身ではないかチェック
+    # Check if the member joining is the bot itself
+    # Note: auth_test is a synchronous API call and might introduce latency
     if client.auth_test().get("user_id") == user_id:
         return
 
-    # 歓迎メッセージの作成
+    # Create the welcome message
+    # (The channel ID #general is a placeholder and should be updated if necessary)
     welcome_message = (
-        f"ようこそ！ :tada: <@{user_id}> さん、このチャンネルにご参加ありがとうございます！\n\n"
-        f"私たちはこのチャンネルで主に*最新のプロジェクトアップデートや技術的な議論*を共有しています。\n"
-        f"ぜひ、まずは <#C012345> (もしあれば) で自己紹介をお願いします！\n"
-        f"ご不明な点があれば、いつでも質問してくださいね！ :bulb:"
+        f"Welcome! :tada: <@{user_id}>, thanks for joining this channel!\n\n"
+        f"In this channel, we primarily share *the latest project updates and technical discussions*.\n"
+        f"Feel free to introduce yourself in the #general channel!\n"
+        f"If you have any questions, don't hesitate to ask! :bulb:"
     )
 
     try:
-        # チャンネルにメッセージを投稿
+        # Post the message to the channel
         client.chat_postMessage(
             channel=channel_id,
             text=welcome_message
@@ -80,30 +56,50 @@ def handle_member_joined_channel(event, client, logger):
         logger.info(f"Welcome message sent to {user_id} in {channel_id}")
     except Exception as e:
         logger.error(f"Error sending welcome message: {e}")
-        # VercelのLogsに出力されるようにエラーをロギング
-        print(f"ERROR: Failed to send message: {e}")
+
 
 # -----------------------------------------------
-# Flask App Runner
+# Vercel/Lambda Entry Point (Handler Integration)
 # -----------------------------------------------
 
-if __name__ == "__main__":
-    # 環境変数のチェック
-    if not os.environ.get("SLACK_BOT_TOKEN"):
-        print("Warning: SLACK_BOT_TOKEN environment variable is not set")
-        print("Please set your Slack bot token to test the app")
-    
-    if not os.environ.get("SLACK_SIGNING_SECRET"):
-        print("Warning: SLACK_SIGNING_SECRET environment variable is not set")
-        print("Please set your Slack signing secret to test the app")
-    
-    # Flask appを起動
-    print("Starting Slack bot server...")
-    print("Available endpoints:")
-    print("  GET  / - Health check")
-    print("  POST /slack/events - Slack Events API")
-    print("  POST /slack/interactive - Slack Interactive Components")
-    print("  GET  /slack/oauth - Slack OAuth callback")
-    print("\nTo test locally, use ngrok or similar tool to expose this server to Slack")
-    
-    flask_app.run(host="0.0.0.0", port=3000, debug=True)
+def handler(event, context):
+    """
+    The standard entry point for Vercel (AWS Lambda).
+    It prioritizes custom URL verification logic and delegates all others
+    to the standard Bolt handler.
+    """
+    body_str = event.get('body')
+
+    # If there is no body (e.g., a GET request), delegate immediately to the Bolt handler
+    if not body_str:
+        return slack_handler.handle(event, context)
+
+    try:
+        # Attempt to parse the body as JSON
+        body = json.loads(body_str)
+
+        # 1. Custom handling for url_verification event
+        if body.get('type') == 'url_verification':
+            challenge = body.get('challenge')
+            logger.info("Handling custom URL Verification request.")
+            if challenge:
+                # Return the challenge parameter as plain text immediately
+                return {
+                    "statusCode": HTTPStatus.OK.value,
+                    "headers": {"Content-Type": "text/plain"},
+                    "body": challenge
+                }
+
+    except json.JSONDecodeError:
+        # If JSON decoding fails (e.g., if it's a signed payload but not JSON),
+        # delegate to SlackRequestHandler for signature verification failure handling.
+        logger.warning("JSON decode failed. Delegating to SlackRequestHandler for verification.")
+        pass
+    except Exception as e:
+        # Catch any other unexpected errors during pre-processing
+        logger.error(f"Custom handler pre-processing error: {e}")
+        pass
+
+    # 2. All requests other than url_verification are delegated to
+    # the Slack Bolt framework's standard processing (including signature verification)
+    return slack_handler.handle(event, context)
